@@ -1,11 +1,13 @@
 from typing import Dict, List, Callable
 import os
+import json
+import logging
 
 from dotenv import load_dotenv
-from notion_client import Client
+from notion_client import Client as NotionClient
+from openai import OpenAI
 
 load_dotenv()
-
 
 class Item:
     title: str 
@@ -14,12 +16,18 @@ class Item:
     _process_func: Callable
 
     def __init__(self, item: Dict):
+        self.life_lessons_database_id = os.environ["LIFE_LESSONS_DATABASE_ID"]
+        self.reading_database_id = os.environ["READING_DATABASE_ID"]
+        self.new_book_template_id = os.environ["NEW_BOOK_TEMPLATE_ID"]
+
+
         # Map the type shortcuts to the correct types and processor functions
         type_map = {
             "p": ("principle", self.handle_principle),
             "t": ("task", self.handle_task),
             "q": ("quote", self.handle_qoute),
-            "j": ("journal", self.handle_journal)
+            "j": ("journal", self.handle_journal),
+            "b": ("book", self.handle_book)
         }
 
         self.raw_item = item
@@ -51,10 +59,9 @@ class Item:
 
     def handle_qoute(self, notion):
         print(f"Processing quote: {self.title}")
-        life_lessons_db_id = os.environ["LIFE_LESSONS_DATABASE_ID"]
 
         notion.pages.create(
-            parent={"database_id": life_lessons_db_id},
+            parent={"database_id": self.life_lessons_database_id},
             properties={
                 "Name": {
                     "title": [
@@ -79,11 +86,10 @@ class Item:
 
     def handle_principle(self, notion):
         print(f"Processing principle: {self.title}")
-        life_lessons_db_id = os.environ["LIFE_LESSONS_DATABASE_ID"]
 
         # Create principle page in the Life Lessons database
         notion.pages.create(
-            parent={"database_id": life_lessons_db_id},
+            parent={"database_id": self.life_lessons_database_id},
             properties={
                 "Name": {
                     "title": [
@@ -152,6 +158,66 @@ class Item:
         )
 
         self.complete_item(notion)
+
+
+    def handle_book(self, notion) -> None:
+        print("INFO: Processing book")
+        openai_client = OpenAI(api_key=os.environ["OPEN_AI_API_KEY"])
+        
+        # Get book details using the openai API
+        res = openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            response_format={ "type": "json_object" },
+            messages=[
+            {"role": "system", "content": "You are a helpful assistant that provides book details in JSON format."},
+            {"role": "user", "content": f"Can you give me the full title and author \
+                of this book in JSON format with keys title and author? If it doesn't\
+                seem a title exists, can you respond with a json key error? The book \
+                title is close to: {self.title}"}
+            ]
+        )
+
+        book_details = json.loads(res.choices[0].message.content)
+
+        # TODO: Show errors in notion
+        if "error" in book_details:
+            print("ERROR: no title found")
+            return
+
+        print(f"INFO: Process book {book_details['title']} by {book_details['author']}")
+
+        template_page = notion.pages.retrieve(self.new_book_template_id)
+
+        new_book_page = {
+            "parent": {"database_id": self.reading_database_id},
+            "icon": template_page["icon"],
+            "properties": {
+                "Name": {
+                    "title": [
+                        {
+                            "text": {
+                                "content": book_details["title"]
+                            }
+                        }
+                    ]
+                },
+                "Author": {
+                    "multi_select": [
+                        {"name": book_details["author"]}
+                    ]
+                },
+                "Status": {
+                    "select": {
+                        "name": "Not Read",
+                    }
+                }
+            },
+        }
+        notion_client.pages.create(**new_book_page)
+        
+        
+        self.complete_item(notion)
+        print("INFO: Completed book processing")
         
     
     def complete_item(self, notion) -> None:
@@ -178,13 +244,13 @@ def get_inbox_items(notion) -> List[Item]:
             "equals": "Inbox"
         }
     }
-    response = notion.databases.query(
+    res = notion.databases.query(
         **{
             "database_id": task_db_id,
             "filter": filter_params
         }
     )
-    return [Item(item) for item in response.get('results', [])]
+    return [Item(item) for item in res.get('results', [])]
 
 
 # Books
@@ -192,7 +258,7 @@ def get_inbox_items(notion) -> List[Item]:
 # Journal Items
 
 if __name__ == "__main__":
-    notion = Client(auth=os.getenv("NOTION_API_KEY"))
-    inbox_items = get_inbox_items(notion)
+    notion_client = NotionClient(auth=os.getenv("NOTION_API_KEY"))
+    inbox_items = get_inbox_items(notion_client)
     for item in inbox_items:
-        item.process_item(notion)
+        item.process_item(notion_client)
