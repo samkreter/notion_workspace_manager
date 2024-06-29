@@ -9,7 +9,11 @@ readme = "README.md"
 python = "^3.12"
 notion-client = "^2.2.1"
 python-dotenv = "^1.0.1"
+openai = "^1.33.0"
 
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.4"
 
 [build-system]
 requires = ["poetry-core"]
