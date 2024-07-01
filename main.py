@@ -1,264 +1,135 @@
-from typing import Dict, List, Callable
-import os
-import json
+from typing import List, Dict
 import logging
 
-from dotenv import load_dotenv
-from notion_client import Client as NotionClient
-from openai import OpenAI
-
-load_dotenv()
+from notion_workspace_manager.config import Config
+from notion_workspace_manager.notion_helper import NotionHelper
+from notion_workspace_manager.openai_helper import OpenAIHelper
 
 class Item:
-    title: str 
-    raw_item: Dict
-    type: str
-    _process_func: Callable
+    TYPE_MAP = {
+        "p": ("principle", "handle_principle"),
+        "t": ("task", "handle_task"),
+        "q": ("quote", "handle_quote"),
+        "j": ("journal", "handle_journal"),
+        "b": ("book", "handle_book")
+    }
 
-    def __init__(self, item: Dict):
-        self.life_lessons_database_id = os.environ["LIFE_LESSONS_DATABASE_ID"]
-        self.reading_database_id = os.environ["READING_DATABASE_ID"]
-        self.new_book_template_id = os.environ["NEW_BOOK_TEMPLATE_ID"]
-
-
-        # Map the type shortcuts to the correct types and processor functions
-        type_map = {
-            "p": ("principle", self.handle_principle),
-            "t": ("task", self.handle_task),
-            "q": ("quote", self.handle_qoute),
-            "j": ("journal", self.handle_journal),
-            "b": ("book", self.handle_book)
-        }
-
+    def __init__(self, item: Dict, notion: NotionHelper):
+        self.notion = notion
         self.raw_item = item
 
-        # Handle not found type
+        self.title, self.type, self.handler_method = self._parse_item()
+
+    def _parse_item(self):
         split_title = self._get_title().split(":")
         if len(split_title) != 2:
-            self.type = "unregistered_type"
-            self.title = self._get_title()
-            self._process_func = self.handle_unregistered_type
-            return
-
-        self.title = split_title[1].strip()
-        self.type, self._process_func =  type_map.get(
-            split_title[0].lower(), 
-            ("unregistered_type", self.handle_unregistered_type)
-        )
-
+            return self._get_title(), "unregistered_type", self.handle_unregistered_type
+        
+        type_key, title = split_title[0].lower(), split_title[1].strip()
+        type_info = self.TYPE_MAP.get(type_key, ("unregistered_type", None, self.handle_unregistered_type))
+        return title, type_info[0], getattr(self, type_info[2])
 
     def _get_title(self) -> str:
         return self.raw_item["properties"]["Task name"]["title"][0]["plain_text"]
-        
+
     @property
     def page_id(self) -> str:
         return self.raw_item["id"]
-        
-    def process_item(self, notion):
-        self._process_func(notion)
 
-    def handle_qoute(self, notion):
-        print(f"Processing quote: {self.title}")
+    def process_item(self):
+        self.handler_method()
 
-        notion.pages.create(
-            parent={"database_id": self.life_lessons_database_id},
+    def handle_quote(self):
+        self._create_page(
+            database_id=Config.life_lessons_database_id,
             properties={
-                "Name": {
-                    "title": [
-                        {
-                            "text": {
-                                "content": self.title
-                            }
-                        }
-                    ]
-                },
-                "Type": {
-                    "select": {
-                        "name": "Quote"
-                    }
-                }
+                "Name": {"title": [{"text": {"content": self.title}}]},
+                "Type": {"select": {"name": "Quote"}}
             }
         )
+        self.complete_item()
 
-        self.complete_item(notion)
-
-        print(f"Completed quote: {self.title}")
-
-    def handle_principle(self, notion):
-        print(f"Processing principle: {self.title}")
-
-        # Create principle page in the Life Lessons database
-        notion.pages.create(
-            parent={"database_id": self.life_lessons_database_id},
+    def handle_principle(self):
+        self._create_page(
+            database_id=Config.life_lessons_database_id,
             properties={
-                "Name": {
-                    "title": [
-                        {
-                            "text": {
-                                "content": self.title
-                            }
-                        }
-                    ]
-                },
-                "Type": {
-                    "select": {
-                        "name": "Principle"
-                    }
-                }
+                "Name": {"title": [{"text": {"content": self.title}}]},
+                "Type": {"select": {"name": "Principle"}}
             }
         )
+        self.complete_item()
 
-        self.complete_item(notion)
+    def handle_task(self):
+        self._update_page_status("In progress")
 
-    def handle_task(self, notion):
-        # Update status to in progress to review the next day
-        notion.pages.update(
-            page_id=self.page_id,
+    def handle_journal(self):
+        self._create_page(
+            database_id=Config.journal_database_id,
             properties={
-                "Task name": {
-                    "title": [
-                        {
-                            "text": {
-                                "content": self.title
-                            }
-                        }
-                    ]
-                },
-                "Status": {
-                    "status": {
-                        "name": "In progress"
-                    }
-                }
+                "Name": {"title": [{"text": {"content": self.title}}]},
+                "Type": {"select": {"name": "Prompt"}}
             }
         )
+        self.complete_item()
 
-    def handle_journal(self, notion) -> None:
-        print(f"Processing journal: {self.title}")
-        journal_db_id = os.environ["JOURNAL_DATABASE_ID"]
+    def handle_book(self):
+        openai_helper = OpenAIHelper(api_key=Config.openai_api_key)
+        book_details = openai_helper.get_book_details(self.title)
 
-        # Create journal page in the Journal database
-        notion.pages.create(
-            parent={"database_id": journal_db_id},
-            properties={
-                "Name": {
-                    "title": [
-                        {
-                            "text": {
-                                "content": self.title
-                            }
-                        }
-                    ]
-                },
-                "Type": {
-                    "select": {
-                        "name": "Prompt"
-                    }
-                }
-            }
-        )
-
-        self.complete_item(notion)
-
-
-    def handle_book(self, notion) -> None:
-        print("INFO: Processing book")
-        openai_client = OpenAI(api_key=os.environ["OPEN_AI_API_KEY"])
-        
-        # Get book details using the openai API
-        res = openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            response_format={ "type": "json_object" },
-            messages=[
-            {"role": "system", "content": "You are a helpful assistant that provides book details in JSON format."},
-            {"role": "user", "content": f"Can you give me the full title and author \
-                of this book in JSON format with keys title and author? If it doesn't\
-                seem a title exists, can you respond with a json key error? The book \
-                title is close to: {self.title}"}
-            ]
-        )
-
-        book_details = json.loads(res.choices[0].message.content)
-
-        # TODO: Show errors in notion
         if "error" in book_details:
-            print("ERROR: no title found")
+            logging.error(f"error while parsing title: {book_details['error']}")
             return
 
-        print(f"INFO: Process book {book_details['title']} by {book_details['author']}")
-
-        template_page = notion.pages.retrieve(self.new_book_template_id)
-
-        new_book_page = {
-            "parent": {"database_id": self.reading_database_id},
-            "icon": template_page["icon"],
-            "properties": {
-                "Name": {
-                    "title": [
-                        {
-                            "text": {
-                                "content": book_details["title"]
-                            }
-                        }
-                    ]
-                },
-                "Author": {
-                    "multi_select": [
-                        {"name": book_details["author"]}
-                    ]
-                },
-                "Status": {
-                    "select": {
-                        "name": "Not Read",
-                    }
-                }
+        template_page = self.notion.retrieve_page(Config.new_book_template_id)
+        
+        book_title = book_details['title']
+        author = book_details["author"].split(",")[0]
+        
+        logging.info(f"handling book: {book_title} by {author}")
+        self._create_page(
+            database_id=Config.reading_database_id,
+            properties={
+                "Name": {"title": [{"text": {"content": book_title}}]},
+                "Author": {"multi_select": [{"name": author}]},
+                "Status": {"select": {"name": "Not Read"}}
             },
-        }
-        notion_client.pages.create(**new_book_page)
-        
-        
-        self.complete_item(notion)
-        print("INFO: Completed book processing")
-        
-    
-    def complete_item(self, notion) -> None:
-        notion.pages.update(
+            icon=template_page["icon"]
+        )
+        self.complete_item()
+
+    def handle_unregistered_type(self):
+        logging.debug(f"Unregistered type for item: {self.title}")
+
+    def _create_page(self, database_id: str, properties: dict, icon=None):
+        self.notion.create_page(
+            parent={"database_id": database_id},
+            properties=properties,
+            icon=icon
+        )
+        logging.info(f"Created page for item: {self.title}")
+
+    def _update_page_status(self, status: str):
+        self.notion.update_page(
             page_id=self.page_id,
             properties={
-                "Status": {
-                    "status": {
-                        "name": "Done"
-                    }
-                }
+                "Task name": {"title": [{"text": {"content": self.title}}]},
+                "Status": {"status": {"name": status}}
             }
         )
+        logging.info(f"Updated status for item: {self.title} to {status}")
 
-    def handle_unregistered_type(self, notion):
-        pass
+    def complete_item(self):
+        self._update_page_status("Done")
 
-
-def get_inbox_items(notion) -> List[Item]:
-    task_db_id = os.environ["SOURCE_DATABASE_ID"]
-    filter_params = {
-        "property": "Status",
-        "status": {
-            "equals": "Inbox"
-        }
-    }
-    res = notion.databases.query(
-        **{
-            "database_id": task_db_id,
-            "filter": filter_params
-        }
-    )
-    return [Item(item) for item in res.get('results', [])]
-
-
-# Books
-# Bucket list item
-# Journal Items
+def get_inbox_items(notion: NotionHelper) -> List[Item]:
+    filter_params = {"property": "Status", "status": {"equals": "Inbox"}}
+    res = notion.query_database(database_id=Config.source_database_id, filter_params=filter_params)
+    return [Item(item, notion) for item in res.get('results', [])]
 
 if __name__ == "__main__":
-    notion_client = NotionClient(auth=os.getenv("NOTION_API_KEY"))
-    inbox_items = get_inbox_items(notion_client)
+    logging.basicConfig(level=logging.INFO)
+    Config.validate()
+    notion_helper = NotionHelper(api_key=Config.notion_api_key)
+    inbox_items = get_inbox_items(notion_helper)
     for item in inbox_items:
-        item.process_item(notion_client)
+        item.process_item()
