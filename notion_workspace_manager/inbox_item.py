@@ -24,12 +24,19 @@ class InboxItem:
     }
 
     def __init__(self, item: Dict, notion: NotionHelper, 
-                 openai: OpenAIHelper, config: Config
+                 openai: OpenAIHelper, life_lessons_database_id: str,
+                 journal_database_id: str, new_book_template_id: str,
+                 reading_database_id: str
     ):
         self.notion = notion
         self.openai = openai
         self.raw_item = item
-        self.config = config
+        self.config = Config(
+            life_lessons_database_id,
+            journal_database_id,
+            new_book_template_id,
+            reading_database_id
+        )
 
         self.title, self.type, self.handler_method = self._parse_item()
 
