@@ -11,6 +11,7 @@ class NotionHelper:
         }
         if icon:
             page_data["icon"] = icon
+
         return self.client.pages.create(**page_data)
 
     def update_page(self, page_id: str, properties: dict):
