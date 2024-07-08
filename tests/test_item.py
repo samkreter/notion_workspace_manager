@@ -6,7 +6,7 @@ from notion_workspace_manager.notion_helper import NotionHelper
 from notion_workspace_manager.openai_helper import OpenAIHelper
 from notion_workspace_manager.inbox_item import InboxItem
 
-from .test_helpers import get_raw_item
+from .helpers import get_raw_item
 
 
 @pytest.fixture
